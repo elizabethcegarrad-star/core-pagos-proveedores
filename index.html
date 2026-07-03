@@ -479,10 +479,6 @@
     Este es un primer boceto para revisar el enfoque. Se conecta en vivo a la hoja de Google Sheets. Se ocultaron las columnas de Comprobante, Orden de pago y Certificado de retención según lo pedido. Algunos registros anteriores a julio 2024 tienen nombres de proveedor cargados de forma menos consistente — quedan incluidos igual, pero si querés los podemos limpiar en un próximo ajuste.
   </div>
 
-  <div class="note-box" id="sedeNote">
-    <strong>Sobre la sede:</strong> no hay una columna propia para eso, así que la detecto buscando el nombre del local dentro del texto del Comentario (donde vos sí lo cargaste). Se usa solo para filtrar y ver el detalle de cada pago — sacamos el gráfico y el KPI agregados por sede porque, al haber pagos que mencionan varios locales a la vez, esos totales no reflejaban bien el gasto real. Si te falta una sede en la lista o hay que corregir un alias, decime el nombre exacto y lo agrego.
-  </div>
-
   <div class="kpi-grid">
     <div class="kpi">
       <div class="kpi-label">Total pagado</div>
@@ -512,12 +508,6 @@
       <input type="text" id="fSearch" placeholder="Ej: Hierros Cafferata">
     </div>
     <div class="filter-group">
-      <label>Sede</label>
-      <select id="fSede">
-        <option value="">Todas</option>
-      </select>
-    </div>
-    <div class="filter-group">
       <label>Desde</label>
       <input type="date" id="fDesde">
     </div>
@@ -536,7 +526,9 @@
     <div class="card">
       <h3 class="card-title">Curva de gastos por proveedor</h3>
       <p class="card-desc">Total pagado, de mayor a menor. Hacé clic en una barra para ver el detalle completo de ese proveedor.</p>
-      <div class="chart-wrap"><canvas id="chartProveedores"></canvas></div>
+      <div class="chart-wrap" id="chartProveedoresWrap" style="max-height:700px; overflow-y:auto; height:auto;">
+        <div id="chartProveedoresInner" style="position:relative; height:340px;"><canvas id="chartProveedores"></canvas></div>
+      </div>
     </div>
     <div class="card">
       <h3 class="card-title">Evolución mensual (todos los proveedores)</h3>
@@ -608,7 +600,6 @@
         <thead>
           <tr>
             <th data-sort="proveedor">Proveedor</th>
-            <th data-sort="sede">Sede</th>
             <th data-sort="fecha">Fecha de pago</th>
             <th data-sort="monto">Monto</th>
             <th data-sort="descripcion">Descripción</th>
@@ -635,10 +626,6 @@
     </div>
     <div class="modal-amount" id="modalMonto">—</div>
     <div class="modal-field">
-      <div class="modal-field-label">Sede</div>
-      <div class="modal-field-value" id="modalSede">—</div>
-    </div>
-    <div class="modal-field">
       <div class="modal-field-label">Descripción / Comentario</div>
       <div class="modal-field-value" id="modalDescripcion">—</div>
     </div>
@@ -659,57 +646,11 @@ const GID = "1853309244";
 const CSV_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${GID}`;
 const REFRESH_MS = 60000; // auto-refresh cada 60s
 
-// Column indices (A=0 ... N=13) based on the sheet's real layout
+// Column indices (A=0 ... según la hoja real, sin columna vacía intermedia)
 const COL = {
   MES: 0, FECHA_CARGA: 1, FECHA_PAGO: 2, MONTO: 3, PROVEEDOR: 4,
-  MAIL: 6, FACTURA: 7, ESTADO: 8, COMENTARIO: 9
+  MAIL: 5, FACTURA: 6, ESTADO: 7, COMENTARIO: 8
 };
-
-// Sedes CORE conocidas. Cada clave es el nombre "lindo" que se muestra,
-// el array son las variantes de texto que pueden aparecer en el Comentario.
-// Elizabeth: si falta una sede o hay que corregir un alias, agregala/editala acá.
-const SEDES = {
-  "Cabildo": ["cabildo"],
-  "Santa Fe": ["santa fe"],
-  "Devoto": ["devoto"],
-  "Barrio Norte": ["barrio norte"],
-  "Palermo Soho": ["palermo soho", "soho"],
-  "Cañitas": ["cañitas", "canitas"],
-  "Gutiérrez": ["gutierrez", "gutiérrez"],
-  "Urquiza": ["urquiza"],
-  "Juncal": ["juncal"],
-  "Montevideo": ["montevideo"],
-  "Recoleta": ["recoleta"],
-  "Almagro": ["almagro"],
-  "Caballito": ["caballito"],
-  "Colegiales": ["colegiales"],
-  "Carranza": ["carranza"],
-  "Holmberg": ["holmberg"],
-  "Scalabrini": ["scalabrini"],
-  "Vicente López": ["vicente lopez", "vicente lópez"],
-  "Núñez": ["nuñez", "nunez"],
-  "Parque Centenario": ["parque centenario", "centenario"]
-};
-
-function normalizeText(s){
-  return String(s || '')
-    .toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g,''); // saca acentos
-}
-
-function extractSedes(comentario){
-  const text = normalizeText(comentario);
-  if(!text) return [];
-  const found = [];
-  for(const [sede, aliases] of Object.entries(SEDES)){
-    for(const alias of aliases){
-      const clean = normalizeText(alias);
-      const re = new RegExp('\\b' + clean.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '\\b');
-      if(re.test(text)){ found.push(sede); break; }
-    }
-  }
-  return found;
-}
 
 let rawRows = [];
 let filteredRows = [];
@@ -802,7 +743,6 @@ function processRows(data){
     if(proveedor.toLowerCase() === 'proveedor') continue;
     if(monto === null) continue; // sin monto numérico válido, no se puede graficar
     const descripcion = (row[COL.COMENTARIO] || '').trim();
-    const sedes = extractSedes(descripcion);
     rawRows.push({
       proveedor: proveedor || 'Sin nombre',
       fecha: fechaPago,
@@ -810,24 +750,10 @@ function processRows(data){
       descripcion: descripcion,
       mail: (row[COL.MAIL] || '').trim(),
       factura: (row[COL.FACTURA] || '').trim(),
-      estado: (row[COL.ESTADO] || '').trim(),
-      sedes: sedes // array; puede estar vacío o tener más de una
+      estado: (row[COL.ESTADO] || '').trim()
     });
   }
-  populateSedeFilter();
   applyFilters();
-}
-
-function populateSedeFilter(){
-  const select = document.getElementById('fSede');
-  const current = select.value;
-  const usedSedes = new Set();
-  rawRows.forEach(r => r.sedes.forEach(s => usedSedes.add(s)));
-  const sorted = Array.from(usedSedes).sort();
-  select.innerHTML = '<option value="">Todas</option>' +
-    sorted.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('') +
-    '<option value="__sin_sede__">Sin sede identificada</option>';
-  select.value = current;
 }
 
 // ============ FILTERS / SORT ============
@@ -836,15 +762,12 @@ function applyFilters(){
   const desde = document.getElementById('fDesde').value ? new Date(document.getElementById('fDesde').value) : null;
   const hasta = document.getElementById('fHasta').value ? new Date(document.getElementById('fHasta').value) : null;
   const montoMin = parseFloat(document.getElementById('fMontoMin').value) || null;
-  const sedeFilter = document.getElementById('fSede').value;
 
   filteredRows = rawRows.filter(r=>{
     if(search && !r.proveedor.toLowerCase().includes(search) && !r.descripcion.toLowerCase().includes(search)) return false;
     if(desde && r.fecha && r.fecha < desde) return false;
     if(hasta && r.fecha && r.fecha > hasta) return false;
     if(montoMin && r.monto < montoMin) return false;
-    if(sedeFilter === '__sin_sede__' && r.sedes.length > 0) return false;
-    if(sedeFilter && sedeFilter !== '__sin_sede__' && !r.sedes.includes(sedeFilter)) return false;
     return true;
   });
 
@@ -858,7 +781,6 @@ function sortRows(){
     let va, vb;
     if(sortKey === 'proveedor') { va=a.proveedor.toLowerCase(); vb=b.proveedor.toLowerCase(); }
     else if(sortKey === 'monto') { va=a.monto; vb=b.monto; }
-    else if(sortKey === 'sede') { va=(a.sedes[0]||'zzz').toLowerCase(); vb=(b.sedes[0]||'zzz').toLowerCase(); }
     else if(sortKey === 'descripcion') { va=a.descripcion.toLowerCase(); vb=b.descripcion.toLowerCase(); }
     else { va = a.fecha ? a.fecha.getTime() : 0; vb = b.fecha ? b.fecha.getTime() : 0; }
     if(va < vb) return sortDir === 'asc' ? -1 : 1;
@@ -891,11 +813,16 @@ function renderCharts(){
   const byProv = {};
   filteredRows.forEach(r=>{ byProv[r.proveedor] = (byProv[r.proveedor]||0) + r.monto; });
   let entries = Object.entries(byProv).sort((a,b)=>b[1]-a[1]);
-  const top = entries.slice(0,15);
-  const restoSum = entries.slice(15).reduce((s,e)=>s+e[1],0);
+  const TOP_N = 30;
+  const top = entries.slice(0,TOP_N);
+  const restoSum = entries.slice(TOP_N).reduce((s,e)=>s+e[1],0);
   const labels = top.map(e=>e[0]);
   const values = top.map(e=>e[1]);
-  if(restoSum > 0){ labels.push('Otros proveedores'); values.push(restoSum); }
+  if(restoSum > 0){ labels.push(`Otros proveedores (${entries.length-TOP_N})`); values.push(restoSum); }
+
+  // Altura dinámica: más proveedores = gráfico más alto, con scroll interno
+  const chartHeightPx = Math.max(340, labels.length * 26);
+  document.getElementById('chartProveedoresInner').style.height = chartHeightPx + 'px';
 
   const ctx1 = document.getElementById('chartProveedores').getContext('2d');
   if(chartProveedores) chartProveedores.destroy();
@@ -905,7 +832,7 @@ function renderCharts(){
       labels: labels,
       datasets: [{
         data: values,
-        backgroundColor: labels.map((l,i)=> l==='Otros proveedores' ? '#C9D1D3' : '#FF5C33'),
+        backgroundColor: labels.map((l,i)=> l.startsWith('Otros proveedores') ? '#C9D1D3' : '#FF5C33'),
         borderRadius: 4,
         maxBarThickness: 26
       }]
@@ -918,7 +845,7 @@ function renderCharts(){
         if(!elements.length) return;
         const idx = elements[0].index;
         const label = labels[idx];
-        if(label === 'Otros proveedores') return;
+        if(label.startsWith('Otros proveedores')) return;
         selectProvider(label);
       },
       onHover: (evt, elements) => {
@@ -987,7 +914,7 @@ function selectProvider(name){
 
 function renderProviderDetail(){
   if(!selectedProvider) return;
-  // usa todos los pagos del proveedor dentro de los filtros activos (fecha, monto, búsqueda de sede si aplica)
+  // usa todos los pagos del proveedor dentro de los filtros activos (fecha, monto, búsqueda)
   const rows = filteredRows.filter(r => r.proveedor === selectedProvider)
     .slice()
     .sort((a,b)=> (a.fecha?a.fecha.getTime():0) - (b.fecha?b.fecha.getTime():0));
@@ -1111,13 +1038,9 @@ function renderTable(){
     const realIdx = start+idx;
     const facturaCell = isDriveOrUrl(r.factura)
       ? `<a href="${r.factura}" target="_blank" class="link-icon" onclick="event.stopPropagation()">Ver ↗</a>`
-      : `<span class="no-link">—</span>`;
-    const sedeCell = r.sedes.length
-      ? r.sedes.map(s=>`<span class="badge">${escapeHtml(s)}</span>`).join(' ')
-      : `<span class="badge warn">Sin identificar</span>`;
+      : (r.factura ? `<span class="no-link">${escapeHtml(r.factura)}</span>` : `<span class="no-link">—</span>`);
     return `<tr onclick="openModal(${realIdx})">
       <td class="provider-cell">${escapeHtml(r.proveedor)}</td>
-      <td>${sedeCell}</td>
       <td>${fmtFecha(r.fecha)}</td>
       <td class="amount-cell">${fmtMoney(r.monto)}</td>
       <td class="desc-cell" title="${escapeHtml(r.descripcion)}">${escapeHtml(r.descripcion) || '—'}</td>
@@ -1152,7 +1075,6 @@ function openModal(idx){
   document.getElementById('modalProveedor').textContent = row.proveedor;
   document.getElementById('modalFecha').textContent = 'Pago del ' + fmtFecha(row.fecha) + (row.estado ? ' · ' + row.estado : '');
   document.getElementById('modalMonto').textContent = fmtMoney(row.monto);
-  document.getElementById('modalSede').textContent = row.sedes.length ? row.sedes.join(', ') : 'No identificada en el comentario';
   document.getElementById('modalDescripcion').textContent = row.descripcion || 'Sin descripción cargada.';
   document.getElementById('modalMail').textContent = row.mail || 'No registrado';
   const btn = document.getElementById('modalFacturaBtn');
@@ -1180,10 +1102,8 @@ document.getElementById('fSearch').addEventListener('input', applyFilters);
 document.getElementById('fDesde').addEventListener('change', applyFilters);
 document.getElementById('fHasta').addEventListener('change', applyFilters);
 document.getElementById('fMontoMin').addEventListener('input', applyFilters);
-document.getElementById('fSede').addEventListener('change', applyFilters);
 document.getElementById('clearFilters').addEventListener('click', ()=>{
   document.getElementById('fSearch').value='';
-  document.getElementById('fSede').value='';
   document.getElementById('fDesde').value='';
   document.getElementById('fHasta').value='';
   document.getElementById('fMontoMin').value='';
